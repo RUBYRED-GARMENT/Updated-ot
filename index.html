@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RUBYRED - Pro Management</title>
+    <style>
+        :root { --ruby: #e0115f; --bg: #0d0d0d; --card: #1a1a1a; --text: #fff; }
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; background: var(--bg); color: var(--text); display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 15px; }
+        .container { background: var(--card); padding: 2.5rem; border-radius: 15px; width: 100%; max-width: 400px; border-top: 5px solid var(--ruby); box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .dashboard { display: flex; justify-content: space-between; margin-bottom: 20px; font-size: 13px; color: #888; border-bottom: 1px solid #333; padding-bottom: 10px; }
+        .stat-box span { color: var(--ruby); font-weight: bold; }
+        h2 { color: var(--ruby); text-align: center; margin: 0; letter-spacing: 2px; }
+        .brand-sub { text-align: center; font-size: 11px; color: #888; margin-bottom: 25px; }
+        .field-group { margin-bottom: 15px; text-align: right; }
+        label { display: block; margin-bottom: 5px; font-size: 14px; color: var(--ruby); font-weight: bold; }
+        input { width: 100%; padding: 12px; background: #262626; border: 1px solid #333; border-radius: 8px; color: #fff; box-sizing: border-box; font-size: 18px; outline: none; text-align: center; }
+        #nameInp { font-size: 13px; text-align: left; direction: ltr; }
+        #deptInp { font-size: 13px; text-align: center; }
+        .safe-hours { color: #00ff88 !important; font-weight: bold; }
+        .danger-hours { color: #ff3333 !important; font-weight: bold; }
+        .btn { width: 100%; padding: 14px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; margin-top: 10px; }
+        #checkBtn { background: var(--ruby); color: white; }
+        #submitBtn { background: #28a745; color: white; display: none; }
+        #backBtn { background: #444; color: white; display: none; margin-top: 5px; }
+        #msg { margin-top: 15px; text-align: center; font-size: 14px; display: none; padding: 10px; border-radius: 8px; font-weight: bold; }
+        .error { background: rgba(255,0,0,0.15); color: #ff6666; border: 1px solid #ff4444; }
+        .success { background: rgba(0,255,0,0.15); color: #00e676; border: 1px solid #00c851; }
+        .info { background: rgba(51,181,229,0.1); color: #33b5e5; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="dashboard">
+        <div class="stat-box">المسجلين اليوم: <span id="countDash">0</span></div>
+        <div class="stat-box">RUBYRED <span>SYSTEM</span></div>
+    </div>
+
+    <h2>RUBYRED</h2>
+    <div class="brand-sub">PRODUCTION OVERTIME</div>
+
+    <div id="searchSection">
+        <div class="field-group">
+            <label>كود العامل:</label>
+            <input type="text" id="codeInp" placeholder="أدخل الكود..." autofocus oninput="this.value=this.value.trim()" onkeydown="if(event.key==='Enter') lookupEmployee()">
+        </div>
+        <button class="btn" id="checkBtn" onclick="lookupEmployee()">فحص (Check)</button>
+    </div>
+
+    <div id="detailsSection" style="display:none;">
+        <div class="field-group">
+            <label>الاسم:</label>
+            <input type="text" id="nameInp" disabled>
+        </div>
+        <div class="field-group">
+            <label>القسم:</label>
+            <input type="text" id="deptInp" disabled>
+        </div>
+        <div class="field-group">
+            <label>إجمالي الساعات (نصي):</label>
+            <input type="text" id="hoursInp" disabled style="background: transparent; border: 1px solid #444;">
+        </div>
+        <button class="btn" id="submitBtn" onclick="submitData()">تأكيد وإرسال (Submit)</button>
+        <button class="btn" id="backBtn" onclick="resetUI()">رجوع (Back)</button>
+    </div>
+
+    <div id="msg"></div>
+    <button class="btn" style="background:transparent; border:1px solid #333; color:#aaa; font-size:11px; margin-top:20px;" onclick="downloadHistory()">تحميل سجل اليوم (CSV) 📥</button>
+</div>
+
+<script>
+    const API_URL = "https://script.google.com/macros/s/AKfycbx9V7P_8eYHrCOd1h_iHK5qsRXkKmEQVSqGgGtWqWYLRcuVuKBXQaoXmctggS0cHfnh/exec";
+
+    // كاش للموظفين عشان البحث يكون أسرع
+    let employeeCache = {};
+    let cacheLoaded = false;
+
+    async function preloadEmployees() {
+        try {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 15000); // timeout 15 ثانية
+            const res = await fetch(`${API_URL}?action=getAllEmployees`, { signal: ctrl.signal });
+            clearTimeout(timer);
+            const data = await res.json();
+            if (data.status === "success" && data.employees) {
+                data.employees.forEach(emp => {
+                    employeeCache[String(emp.code).trim()] = emp;
+                });
+                cacheLoaded = true;
+            }
+        } catch(e) {}
+    }
+
+    window.onload = () => { Promise.all([updateDashboard(), preloadEmployees()]); };
+
+    // وظيفة تعرض الساعات كما هي من جوجل شيت بغض النظر عن نوع القيمة
+    function extractLiteralTime(raw) {
+        if (raw === null || raw === undefined || raw === "") return "00:00";
+        let str = String(raw).trim();
+
+        // الحالة 1: نص جاهز زي "5:00" أو "10:30" أو "5:00:00"
+        if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(str)) {
+            let parts = str.split(':');
+            return parts[0].padStart(2, '0') + ":" + parts[1].padStart(2, '0');
+        }
+
+        // الحالة 2: ISO datetime من جوجل شيت (مثلاً 1899-12-30T07:54:00.000Z)
+        // ⚠️ الوقت بعد T بيكون UTC — لازم نضيف offset الـ timezone عشان يظهر صح
+        if (str.includes('T')) {
+            let timePart = str.split('T')[1].replace('Z','');
+            let parts = timePart.split(':');
+            let h = parseInt(parts[0]) || 0;
+            let m = parseInt(parts[1]) || 0;
+            let s = parseInt(parts[2]) || 0;
+            let totalSecondsUTC = h * 3600 + m * 60 + s;
+            let offsetSeconds = new Date().getTimezoneOffset() * -60 + 360; // تصحيح انحراف 6 دقائق
+            let totalSeconds = ((totalSecondsUTC + offsetSeconds) % 86400 + 86400) % 86400;
+            let hours = Math.floor(totalSeconds / 3600);
+            let minutes = Math.floor((totalSeconds % 3600) / 60);
+            return String(hours).padStart(2, '0') + ':' + String(minutes).padStart(2, '0');
+        }
+
+        // الحالة 3: رقم عشري من جوجل شيت (0.208333 = 5 ساعات)
+        // جوجل شيت بيحول الوقت لكسر من اليوم (1 يوم = 24 ساعة)
+        let num = parseFloat(str);
+        if (!isNaN(num) && num > 0 && num <= 1) {
+            let totalMinutes = Math.round(num * 24 * 60);
+            let hours = Math.floor(totalMinutes / 60);
+            let minutes = totalMinutes % 60;
+            return String(hours).padStart(2, '0') + ":" + String(minutes).padStart(2, '0');
+        }
+
+        // الحالة 4: رقم صحيح أو عشري أكبر من 1 (عدد ساعات مباشر زي 5 أو 10.5)
+        if (!isNaN(num) && num > 1) {
+            let hours = Math.floor(num);
+            let minutes = Math.round((num - hours) * 60);
+            return String(hours).padStart(2, '0') + ":" + String(minutes).padStart(2, '0');
+        }
+
+        // الحالة 5: أي نص تاني — اعرضه كما هو
+        return str;
+    }
+
+    async function updateDashboard() {
+        try {
+            const ctrl = new AbortController();
+            setTimeout(() => ctrl.abort(), 10000);
+            const res = await fetch(`${API_URL}?action=getFullTodayData`, { signal: ctrl.signal });
+            const data = await res.json();
+            if(data.status === "success") document.getElementById('countDash').innerText = data.totalEmployees;
+        } catch(e) {}
+    }
+
+    async function lookupEmployee() {
+        const code = String(document.getElementById('codeInp').value).trim();
+        if (!code) return showMessage("يرجى إدخال الكود", "error");
+
+        // لو الكاش محمل — بحث فوري بدون ما نكلم السيرفر
+        if (cacheLoaded && employeeCache[code]) {
+            const emp = employeeCache[code];
+            displayEmployee({ status: "success", name: emp.name, dept: emp.dept, hours: emp.hours });
+            return;
+        }
+
+        // لو الكاش مش محمل — روح للـ API عادي
+        showMessage("جاري البحث...", "info");
+        try {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 15000);
+            const res = await fetch(`${API_URL}?code=${code}`, { signal: ctrl.signal });
+            clearTimeout(timer);
+            const data = await res.json();
+            if (data.status === "already_registered") return showMessage("⚠️ الموظف مسجل بالفعل!", "error");
+            if (data.status === "success") {
+                displayEmployee(data);
+                // حدّث الكاش
+                employeeCache[code] = { name: data.name, dept: data.dept, hours: data.hours };
+            } else { showMessage("الكود غير موجود", "error"); }
+        } catch (e) {
+            if (e.name === 'AbortError') {
+                showMessage("انتهت المهلة، حاول مرة أخرى", "error");
+            } else {
+                showMessage("خطأ في الاتصال - تحقق من الإنترنت", "error");
+            }
+        }
+    }
+
+    function displayEmployee(data) {
+        document.getElementById('nameInp').value = data.name;
+        document.getElementById('deptInp').value = data.dept;
+
+        const displayTime = extractLiteralTime(data.hours);
+        const hInput = document.getElementById('hoursInp');
+        hInput.value = displayTime;
+
+        const h = parseInt(displayTime.split(':')[0]) || 0;
+        const m = parseInt(displayTime.split(':')[1]) || 0;
+
+        hInput.className = "";
+        if (h > 10 || (h === 10 && m > 30)) {
+            hInput.classList.add("danger-hours");
+            document.getElementById('submitBtn').style.display = 'none';
+            showMessage("مرفوض: تخطى الحد الأقصى (10:30)", "error");
+        } else {
+            hInput.classList.add("safe-hours");
+            document.getElementById('submitBtn').style.display = 'block';
+            hideMessage();
+        }
+
+        document.getElementById('searchSection').style.display = 'none';
+        document.getElementById('detailsSection').style.display = 'block';
+        document.getElementById('backBtn').style.display = 'block';
+    }
+
+    async function submitData() {
+        const payload = {
+            code: document.getElementById('codeInp').value,
+            name: document.getElementById('nameInp').value,
+            dept: document.getElementById('deptInp').value,
+            hours: document.getElementById('hoursInp').value // يرسل الوقت الصافي (15:00)
+        };
+        try {
+            await fetch(API_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
+            showMessage("تم التسجيل بنجاح!", "success");
+            updateDashboard();
+            setTimeout(resetUI, 1500);
+        } catch (e) { showMessage("فشل الحفظ", "error"); }
+    }
+
+    function resetUI() {
+        document.getElementById('codeInp').value = "";
+        document.getElementById('searchSection').style.display = 'block';
+        document.getElementById('detailsSection').style.display = 'none';
+        document.getElementById('codeInp').focus();
+        hideMessage();
+    }
+
+    // تنسيق وقت التسجيل القادم من الـ API عشان يظهر زي "14:35"
+    function formatRegTime(raw) {
+        if (!raw) return "";
+        let str = String(raw).trim();
+        // لو ISO datetime
+        if (str.includes('T')) {
+            let timePart = str.split('T')[1].replace('Z','');
+            let parts = timePart.split(':');
+            let h = parseInt(parts[0]) || 0;
+            let m = parseInt(parts[1]) || 0;
+            let offsetMins = new Date().getTimezoneOffset() * -1 + 6;
+            let total = h * 60 + m + offsetMins;
+            total = ((total % 1440) + 1440) % 1440;
+            return String(Math.floor(total/60)).padStart(2,'0') + ':' + String(total%60).padStart(2,'0');
+        }
+        // لو نص عادي زي "14:35:00"
+        let match = str.match(/^(\d{1,2}):(\d{2})/);
+        if (match) return match[1].padStart(2,'0') + ':' + match[2];
+        return str;
+    }
+
+    async function downloadHistory() {
+        showMessage("Downloading...", "info");
+        try {
+            const res = await fetch(`${API_URL}?action=getFullTodayData`);
+            const data = await res.json();
+            if (data.status === "success") {
+                const dateStr = new Date().toISOString().split('T')[0];
+                let csv = "\uFEFF";
+                csv += "RUBYRED - Daily Overtime Report\n";
+                csv += `Date:,${dateStr}\n`;
+                csv += `Total Registered:,${data.list.length}\n`;
+                csv += "\n";
+                csv += "#,Employee Code,Full Name,Department,Overtime Hours,Registration Time\n";
+                data.list.forEach((r, i) => {
+                    const hrs = extractLiteralTime(r.hours);
+                    const regTime = formatRegTime(r.time);
+                    csv += `${i+1},${r.code},"${r.name}","${r.dept}",${hrs},${regTime}\n`;
+                });
+                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement("a");
+                link.href = URL.createObjectURL(blob);
+                link.download = `RUBYRED_Overtime_${dateStr}.csv`;
+                link.click();
+                hideMessage();
+            }
+        } catch (e) { showMessage("Download failed", "error"); }
+    }
+
+    function showMessage(t, c) { const m = document.getElementById('msg'); m.innerText = t; m.className = c; m.style.display = 'block'; }
+    function hideMessage() { document.getElementById('msg').style.display = 'none'; }
+</script>
+
+</body>
+</html>
